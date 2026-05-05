@@ -1,0 +1,12 @@
+*.exe
+*.exe~
+tmp/
+main
+main.exe
+.air.toml
+
+.env
+
+.vscode/
+.idea/
+
