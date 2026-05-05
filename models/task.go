@@ -17,11 +17,11 @@ type Task struct {
 type TaskInput struct {
 	Title       string `json:"title" binding:"required"`
 	Description string `json:"description"`
-	Status      string `json:"status" binding:"omitempty,oneof=pending processing completed"`
+	Status      string `json:"status" binding:"oneof=pending processing completed"`
 }
 
 type TaskInputChangeStatus struct {
-	Status string `json:"status" binding:"required,omitempty,oneof=pending processing completed"`
+	Status string `json:"status" binding:"required,oneof=pending processing completed"`
 }
 
 type TaskQuery struct {
