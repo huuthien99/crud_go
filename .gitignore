@@ -1,12 +1,28 @@
+# Binaries
 *.exe
 *.exe~
-tmp/
 main
 main.exe
+tmp/
+
+# Air
 .air.toml
+build-errors.log
 
+# Environment
 .env
+.env.local
+.env.*.local
 
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
