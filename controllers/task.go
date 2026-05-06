@@ -3,8 +3,10 @@ package controllers
 import (
 	"auth_crud/config"
 	"auth_crud/models"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,10 +24,40 @@ func CreateTask(c *gin.Context) {
 		Title:       input.Title,
 		Description: input.Description,
 		UserID:      userID,
+		Status:      "pending",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 
-	if err := config.DB.Create(&task).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create todo"})
+	const taskFields = `
+		id, title, description, status, user_id, created_at, updated_at
+	`
+
+	query := `
+	INSERT INTO tasks(title, description, status, user_id, created_at, updated_at)
+	VALUES ($1, $2, $3, $4, $5, $6)
+	RETURNING ` + taskFields
+
+	err := config.DB.QueryRow(
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.UserID,
+		task.CreatedAt,
+		task.UpdatedAt,
+	).Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&task.Status,
+		&task.UserID,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create task"})
 		return
 	}
 
@@ -43,67 +75,147 @@ func GetTaskList(c *gin.Context) {
 		return
 	}
 
-	if query.Page < 1 {
-		query.Page = 1
+	page := 1
+	limit := 10
+
+	if query.Page != nil && *query.Page > 1 {
+		page = *query.Page
 	}
 
-	if query.Limit < 1 {
-		query.Limit = 10
+	if query.Limit != nil && *query.Limit > 1 {
+		limit = *query.Limit
 	}
 
-	offset := (query.Page - 1) * query.Limit
+	offset := (page - 1) * limit
 
-	var total int64
+	where := "WHERE user_id = $1"
 
-	var tasks []models.Task
+	args := []any{userID}
 
-	db := config.DB.Model(&models.Task{}).Where("user_id = ?", userID)
+	argId := 2
 
 	if query.Search != "" {
-		db = db.Where("title ILIKE ?", "%"+query.Search+"%")
+		where += " AND title ILIKE $" + strconv.Itoa(argId)
+		args = append(args, "%"+query.Search+"%")
+		argId++
 	}
 
 	if query.Status != "" {
-		db = db.Where("status = ?", query.Status)
+		where += " AND status = $" + strconv.Itoa(argId)
+		args = append(args, query.Status)
+		argId++
 	}
 
-	db.Count(&total)
-	db.Order("created_at desc").Offset(offset).Limit(query.Limit).Find(&tasks)
+	countQuery := "SELECT COUNT(*) FROM tasks " + where
+
+	var total int64
+	err := config.DB.QueryRow(countQuery, args...).Scan(&total)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count tasks"})
+		return
+	}
+
+	dataQuery := `
+		SELECT id, title, description, status, user_id, created_at, updated_at
+		FROM tasks
+		` + where + `
+		ORDER BY created_at DESC
+		LIMIT $` + strconv.Itoa(argId) + `
+		OFFSET $` + strconv.Itoa(argId+1)
+
+	args = append(args, limit, offset)
+
+	rows, err := config.DB.Query(dataQuery, args...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get tasks"})
+		return
+	}
+
+	defer rows.Close()
+
+	var tasks []models.Task
+
+	for rows.Next() {
+		var task models.Task
+
+		err := rows.Scan(
+			&task.ID,
+			&task.Title,
+			&task.Description,
+			&task.Status,
+			&task.UserID,
+			&task.CreatedAt,
+			&task.UpdatedAt,
+		)
+		if err != nil {
+			log.Println("Scan stack fail", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error!"})
+			return
+		}
+
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		log.Println("Row iteration error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error!"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": tasks,
 		"pagination": gin.H{
-			"page":        query.Page,
-			"limit":       query.Limit,
+			"page":        page,
+			"limit":       limit,
 			"total":       total,
-			"total_pages": (total + int64(query.Limit) - 1) / int64(query.Limit),
+			"total_pages": (total + int64(limit) - 1) / int64(limit),
 		},
 	})
 }
 
-func GetTaskHelper(c *gin.Context) (models.Task, bool) {
+func GetTaskHelper(userID uint, taskID uint) (models.Task, error) {
+
+	var task models.Task
+
+	query := `
+		SELECT id, title, description, status, user_id, created_at, updated_at
+		FROM tasks
+		WHERE id = $1 AND user_id = $2
+		`
+	err := config.DB.QueryRow(
+		query,
+		taskID,
+		userID,
+	).Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&task.Status,
+		&task.UserID,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	)
+
+	if err != nil {
+		return models.Task{}, err
+	}
+	return task, nil
+}
+
+func GetTaskById(c *gin.Context) {
 	userID := c.MustGet("user_id").(uint)
+
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 32)
 
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
-		return models.Task{}, false
+		return
 	}
 
-	var task models.Task
+	task, err := GetTaskHelper(userID, uint(id))
 
-	if err := config.DB.Where("id = ? AND user_id = ?", id, userID).First(&task).Error; err != nil {
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
-		return models.Task{}, false
-	}
-	return task, true
-}
-
-func GetTaskById(c *gin.Context) {
-	task, exist := GetTaskHelper(c)
-
-	if !exist {
 		return
 	}
 
@@ -113,20 +225,59 @@ func GetTaskById(c *gin.Context) {
 }
 
 func DeleteTask(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	userID := c.MustGet("user_id").(uint)
-	result := config.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Task{})
-	if result.RowsAffected == 0 {
+
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+	taskId := uint(id)
+
+	query := "DELETE FROM tasks WHERE id = $1 AND user_id = $2"
+
+	result, err := config.DB.Exec(query, taskId, userID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	if rowsAffected == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Task deleted"})
 }
 
 func UpdateTask(c *gin.Context) {
-	task, exist := GetTaskHelper(c)
 
-	if !exist {
+	userID := c.MustGet("user_id").(uint)
+
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	taskId := uint(id)
+
+	task, err := GetTaskHelper(userID, taskId)
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
 		return
 	}
 
@@ -137,38 +288,97 @@ func UpdateTask(c *gin.Context) {
 		return
 	}
 
-	// config.DB.Model(&task).Updates(input)
-	// c.JSON(http.StatusOK, task)
+	query := `
+		UPDATE tasks
+		SET title = $1,
+		    description = $2,
+		    updated_at = NOW()
+		WHERE id = $3 AND user_id = $4
+		RETURNING id, title, description, status, user_id, created_at, updated_at
+	`
 
-	task.Title = input.Title
-	task.Description = input.Description
-	if input.Status != "" {
-		task.Status = input.Status
-	}
+	err = config.DB.QueryRow(
+		query,
+		input.Title,
+		input.Description,
+		taskId,
+		userID,
+	).Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&task.Status,
+		&task.UserID,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	)
 
-	if err := config.DB.Save(&task).Error; err != nil {
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update task"})
 		return
 	}
 
-	c.JSON(http.StatusOK, task)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "OK",
+		"data":    task,
+	})
 }
 
 func ChangeStatus(c *gin.Context) {
-	task, exist := GetTaskHelper(c)
+	userID := c.MustGet("user_id").(uint)
 
-	if !exist {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
 		return
 	}
 
+	taskId := uint(id)
+
+	task, err := GetTaskHelper(userID, taskId)
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+	
 	var input models.TaskInputChangeStatus
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	task.Status = input.Status
+	query := `
+		UPDATE tasks
+		SET status = $1,
+		    updated_at = NOW()
+		WHERE id = $2 AND user_id = $3
+		RETURNING id, title, description, status, user_id, created_at, updated_at
+	`
+	err = config.DB.QueryRow(
+		query,
+		input.Status,
+		taskId,
+		userID,
+	).Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&task.Status,
+		&task.UserID,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	)
 
-	config.DB.Save(&task)
-	c.JSON(http.StatusOK, task)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update task"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "OK",
+		"data":    task,
+	})
 }

@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"auth_crud/middleware"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -10,8 +12,13 @@ func SetupRouter() *gin.Engine {
 	//  prefix
 	api := r.Group("/api/v1")
 
-	// Đăng ký các routes theo module
+	// auth routes
 	SetupAuthRoutes(api)
+
+	// middleware
+	api.Use(middleware.AuthMiddleware())
+
+	// task
 	SetupTaskRoutes(api)
 
 	return r

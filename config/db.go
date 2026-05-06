@@ -1,16 +1,15 @@
 package config
 
 import (
-	"auth_crud/models"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
 
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
+	_ "github.com/lib/pq"
 )
 
-var DB *gorm.DB
+var DB *sql.DB
 
 func ConnectDatabase() {
 	dsn := fmt.Sprintf(
@@ -23,11 +22,16 @@ func ConnectDatabase() {
 		os.Getenv("DB_SSLMODE"),
 	)
 	var err error
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+
+	DB, err = sql.Open("postgres", dsn)
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Fatal("Cannot open DB:", err)
 	}
 
-	DB.AutoMigrate(&models.User{}, &models.Task{})
+	err = DB.Ping()
+	if err != nil {
+		log.Fatal("Cannot connect to DB:", err)
+	}
+
 	log.Println("Database connected successfully!")
 }
